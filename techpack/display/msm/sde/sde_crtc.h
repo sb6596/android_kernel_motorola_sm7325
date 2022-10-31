@@ -463,6 +463,8 @@ struct sde_crtc_state {
 	struct sde_hw_scaler3_lut_cfg scl3_lut_cfg;
 
 	struct sde_core_perf_params new_perf;
+
+	struct drm_msm_pcc *pcc_cfg;
 };
 
 enum sde_crtc_irq_state {
@@ -965,5 +967,8 @@ void sde_crtc_reset_sw_state(struct drm_crtc *crtc);
  * @cstate:      Pointer to drm crtc state
  */
 void _sde_crtc_clear_dim_layers_v1(struct drm_crtc_state *state);
+
+struct drm_msm_pcc *
+sde_crtc_get_pcc_cfg(struct drm_crtc *crtc);
 
 #endif /* _SDE_CRTC_H_ */

@@ -12,6 +12,7 @@
 #include "sde_color_processing.h"
 #include "sde_kms.h"
 #include "sde_crtc.h"
+#include "sde_plane.h"
 #include "sde_hw_dspp.h"
 #include "sde_hw_lm.h"
 #include "sde_ad4.h"
@@ -1546,6 +1547,15 @@ static int sde_cp_crtc_checkfeature(struct sde_cp_node *prop_node,
 	return ret;
 }
 
+static void sde_cp_crtc_set_csc_pcc_feature(struct sde_hw_cp_cfg *hw_cfg,
+					    struct sde_crtc *sde_crtc)
+{
+	struct sde_crtc_state *cstate =
+		to_sde_crtc_state(sde_crtc->base.state);
+
+	cstate->pcc_cfg = hw_cfg->payload;
+}
+
 static void sde_cp_crtc_setfeature(struct sde_cp_node *prop_node,
 				   struct sde_crtc *sde_crtc)
 {
@@ -1567,6 +1577,11 @@ static void sde_cp_crtc_setfeature(struct sde_cp_node *prop_node,
 		if (!hw_dspp || i >= DSPP_MAX)
 			continue;
 		hw_cfg.dspp[i] = hw_dspp;
+	}
+
+	if (prop_node->feature == SDE_CP_CRTC_DSPP_PCC) {
+		sde_cp_crtc_set_csc_pcc_feature(&hw_cfg, sde_crtc);
+		return;
 	}
 
 	if ((prop_node->feature >= SDE_CP_CRTC_MAX_FEATURES) ||
