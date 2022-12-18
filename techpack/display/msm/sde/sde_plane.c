@@ -1185,6 +1185,19 @@ static const struct sde_csc_cfg sde_identity_csc10_cfg = {
 	{ 0, CSC_10BIT_LIMIT, 0, CSC_10BIT_LIMIT, 0, CSC_10BIT_LIMIT },
 	{ 0, CSC_10BIT_LIMIT, 0, CSC_10BIT_LIMIT, 0, CSC_10BIT_LIMIT },
 };
+static const struct sde_csc_cfg sde_identity_csc10_bgr_cfg = {
+	{
+		0, 0, CSC_ONE,
+		CSC_ONE, 0, 0,
+		0, CSC_ONE, 0,
+	},
+	/* signed bias */
+	{ 0, 0, 0 },
+	{ 0, 0, 0 },
+	/* unsigned clamp */
+	{ 0, CSC_10BIT_LIMIT, 0, CSC_10BIT_LIMIT, 0, CSC_10BIT_LIMIT },
+	{ 0, CSC_10BIT_LIMIT, 0, CSC_10BIT_LIMIT, 0, CSC_10BIT_LIMIT },
+};
 static const struct sde_csc_cfg sde_identity_csc_dgm_cfg = {
 	{
 		CSC_DGM_ONE, 0, 0,
@@ -1229,7 +1242,8 @@ static inline void _sde_plane_mul_csc_pcc(struct sde_plane *psde,
 	}
 }
 
-static inline void _sde_plane_setup_csc_pcc(struct sde_plane *psde)
+static inline void _sde_plane_setup_csc_pcc(struct sde_plane *psde,
+					    const struct sde_format *fmt)
 {
 	const struct sde_csc_cfg *csc_ptr = psde->csc_ptr;
 
@@ -1239,12 +1253,17 @@ static inline void _sde_plane_setup_csc_pcc(struct sde_plane *psde)
 		return;
 
 	if (!csc_ptr) {
-		if (psde->features & BIT(SDE_SSPP_CSC_10BIT))
-			csc_ptr = &sde_identity_csc10_cfg;
-		else if (psde->features & BIT(SDE_SSPP_CSC))
+		if (psde->features & BIT(SDE_SSPP_CSC_10BIT)) {
+			if (fmt->base.pixel_format == DRM_FORMAT_XBGR8888 ||
+			    fmt->base.pixel_format == DRM_FORMAT_ABGR8888)
+				csc_ptr = &sde_identity_csc10_bgr_cfg;
+			else
+				csc_ptr = &sde_identity_csc10_cfg;
+		} else if (psde->features & BIT(SDE_SSPP_CSC)) {
 			csc_ptr = &sde_identity_csc_cfg;
-		else if (psde->features & BIT(SDE_SSPP_DGM_CSC))
+		} else if (psde->features & BIT(SDE_SSPP_DGM_CSC)) {
 			csc_ptr = &sde_identity_csc_dgm_cfg;
+		}
 	}
 
 	_sde_plane_mul_csc_pcc(psde, csc_ptr);
@@ -3227,7 +3246,7 @@ static void _sde_plane_update_format_and_rects(struct sde_plane *psde,
 	else
 		psde->csc_ptr = 0;
 
-	_sde_plane_setup_csc_pcc(psde);
+	_sde_plane_setup_csc_pcc(psde, fmt);
 
 	csc_ptr = sde_plane_get_csc_cfg(&psde->base);
 
