@@ -6980,12 +6980,3 @@ void sde_crtc_update_cont_splash_settings(struct drm_crtc *crtc)
 					rate : kms->perf.max_core_clk_rate;
 	sde_crtc->cur_perf.core_clk_rate = kms->perf.max_core_clk_rate;
 }
-
-struct drm_msm_pcc *
-sde_crtc_get_pcc_cfg(struct drm_crtc *crtc)
-{
-	struct sde_crtc_state *cstate =
-		to_sde_crtc_state(crtc->state);
-
-	return cstate->pcc_cfg;
-}

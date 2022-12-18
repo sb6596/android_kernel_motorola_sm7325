@@ -3388,7 +3388,7 @@ static inline void _sde_plane_set_csc_pcc(struct sde_plane *psde,
 					  struct sde_plane_state *pstate,
 					  struct drm_crtc *crtc)
 {
-	struct drm_msm_pcc *pcc_cfg = sde_crtc_get_pcc_cfg(crtc);
+	struct drm_msm_pcc *pcc_cfg = sde_cp_crtc_get_pcc_cfg(crtc);
 
 	if (pcc_cfg == psde->pcc_cfg)
 		return;

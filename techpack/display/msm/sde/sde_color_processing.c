@@ -1547,15 +1547,6 @@ static int sde_cp_crtc_checkfeature(struct sde_cp_node *prop_node,
 	return ret;
 }
 
-static void sde_cp_crtc_set_csc_pcc_feature(struct sde_hw_cp_cfg *hw_cfg,
-					    struct sde_crtc *sde_crtc)
-{
-	struct sde_crtc_state *cstate =
-		to_sde_crtc_state(sde_crtc->base.state);
-
-	cstate->pcc_cfg = hw_cfg->payload;
-}
-
 static void sde_cp_crtc_setfeature(struct sde_cp_node *prop_node,
 				   struct sde_crtc *sde_crtc)
 {
@@ -1579,10 +1570,8 @@ static void sde_cp_crtc_setfeature(struct sde_cp_node *prop_node,
 		hw_cfg.dspp[i] = hw_dspp;
 	}
 
-	if (prop_node->feature == SDE_CP_CRTC_DSPP_PCC) {
-		sde_cp_crtc_set_csc_pcc_feature(&hw_cfg, sde_crtc);
+	if (prop_node->feature == SDE_CP_CRTC_DSPP_PCC)
 		return;
-	}
 
 	if ((prop_node->feature >= SDE_CP_CRTC_MAX_FEATURES) ||
 			set_crtc_feature_wrappers[prop_node->feature] == NULL) {
@@ -4524,4 +4513,25 @@ void sde_cp_crtc_disable(struct drm_crtc *drm_crtc)
 			CRTC_PROP_DSPP_INFO);
 	mutex_unlock(&crtc->crtc_cp_lock);
 	vfree(info);
+}
+
+struct drm_msm_pcc *sde_cp_crtc_get_pcc_cfg(struct drm_crtc *drm_crtc)
+{
+	struct drm_property_blob *blob = NULL;
+	struct sde_cp_node *prop_node = NULL;
+	struct sde_crtc *crtc;
+
+	crtc = to_sde_crtc(drm_crtc);
+
+	mutex_lock(&crtc->crtc_cp_lock);
+	list_for_each_entry(prop_node, &crtc->feature_list, feature_list) {
+		if (prop_node->feature == SDE_CP_CRTC_DSPP_PCC) {
+			blob = prop_node->blob_ptr;
+			break;
+		}
+	}
+
+	mutex_unlock(&crtc->crtc_cp_lock);
+
+	return blob ? blob->data : NULL;
 }
