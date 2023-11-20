@@ -26,8 +26,9 @@
 #include <linux/of_irq.h>
 #include <linux/power_supply.h>
 #include <linux/version.h>
+#include <linux/spi/spi-msm-geni.h>
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
 #if defined(CONFIG_DRM)
 #include <linux/msm_drm_notify.h>
@@ -65,11 +66,16 @@ enum touch_state {
 #include <linux/jiffies.h>
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+#include "moto_ts_dda.h"
+#endif
+
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
+#include <linux/mmi_device.h>
 extern int nvt_mmi_init(struct nvt_ts_data *ts_data, bool enable);
 #endif
 
-#if defined (NVT_SENSOR_EN) || IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if defined (NVT_SENSOR_EN) || IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 #ifdef CONFIG_HAS_WAKELOCK
 static struct wake_lock gesture_wakelock;
 #else
@@ -121,7 +127,7 @@ extern void nvt_mp_proc_deinit(void);
 
 struct nvt_ts_data *ts;
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 
 #define MAX_ATTRS_ENTRIES 10
 #define UI_FEATURE_ENABLE   1
@@ -198,8 +204,8 @@ extern void Boot_Update_Firmware(struct work_struct *work);
 int nvt_mcu_pen_detect_set(uint8_t pen_detect);
 #endif
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
-#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
+#if (((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))) || defined(NVT_CONFIG_DRM_PANEL))
 #if defined(CONFIG_DRM)
 static int nvt_drm_notifier_callback(struct notifier_block *self, unsigned long event, void *data);
 #ifdef LCM_FAST_LIGHTUP
@@ -248,7 +254,7 @@ const uint16_t gesture_key_array[] = {
 	KEY_POWER,  //GESTURE_WORD_C
 	KEY_POWER,  //GESTURE_WORD_W
 	KEY_POWER,  //GESTURE_WORD_V
-	KEY_POWER,  //GESTURE_DOUBLE_CLICK
+	KEY_POWER,  //GESTURE_DOUBLE_CLICK, , GESTURE_SINGLE_CLICK
 	KEY_POWER,  //GESTURE_WORD_Z
 	KEY_POWER,  //GESTURE_WORD_M
 	KEY_POWER,  //GESTURE_WORD_O
@@ -290,6 +296,10 @@ const struct mtk_chip_config spi_ctrdata = {
     .tx_mlsb = 1,
     .cs_pol = 0,
 };
+#endif
+
+#ifdef NVT_TOUCH_LAST_TIME
+static bool time_flag = 1;
 #endif
 
 /*******************************************************
@@ -826,6 +836,43 @@ info_retry:
 	return ret;
 }
 
+int32_t nvt_cmd_ext_store(uint8_t cmd, uint8_t subcmd)
+{
+    int32_t i, retry = 5;
+    uint8_t buf[4] = {0};
+
+    //---set xdata index to EVENT BUF ADDR---
+    nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
+
+    for (i = 0; i < retry; i++) {
+		if (buf[1] != cmd) {
+			//---set cmd status---
+			buf[0] = EVENT_MAP_HOST_CMD;
+			buf[1] = cmd;
+			buf[2] = subcmd;
+			CTP_SPI_WRITE(ts->client, buf, 3);
+		}
+
+		msleep(20);
+
+		//---read cmd status---
+		buf[0] = EVENT_MAP_HOST_CMD;
+		buf[1] = 0xFF;
+		CTP_SPI_READ(ts->client, buf, 2);
+		if (buf[1] == 0x00)
+			break;
+	}
+
+	if (i == retry) {
+		NVT_ERR("send Cmd 0x%02X 0x%02X failed, buf[1]=0x%02X\n", cmd, subcmd, buf[1]);
+		return -1;
+	} else {
+		NVT_LOG("send Cmd 0x%02X 0x%02X success, tried %d times\n", cmd, subcmd, i);
+	}
+
+	return 0;
+}
+
 /*******************************************************
   Create Device Node (Proc Entry)
 *******************************************************/
@@ -982,12 +1029,21 @@ static int32_t nvt_flash_close(struct inode *inode, struct file *file)
 	return 0;
 }
 
+#if KERNEL_VERSION(5, 10, 0) <= LINUX_VERSION_CODE
+static const struct proc_ops nvt_flash_fops = {
+	.proc_open = nvt_flash_open,
+	.proc_read = nvt_flash_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = nvt_flash_close,
+};
+#else
 static const struct file_operations nvt_flash_fops = {
 	.owner = THIS_MODULE,
 	.open = nvt_flash_open,
 	.release = nvt_flash_close,
 	.read = nvt_flash_read,
 };
+#endif
 
 /*******************************************************
 Description:
@@ -1034,6 +1090,7 @@ static void nvt_flash_proc_deinit(void)
 #define GESTURE_WORD_C          12
 #define GESTURE_WORD_W          13
 #define GESTURE_WORD_V          14
+#define GESTURE_SINGLE_CLICK    25
 #define GESTURE_DOUBLE_CLICK    15
 #define GESTURE_WORD_Z          16
 #define GESTURE_WORD_M          17
@@ -1089,6 +1146,7 @@ void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 			NVT_DBG("Gesture : Word-V.\n");
 			keycode = gesture_key_array[2];
 			break;
+		case GESTURE_SINGLE_CLICK:
 		case GESTURE_DOUBLE_CLICK:
 			NVT_DBG("Gesture : Double Click.\n");
 			keycode = gesture_key_array[3];
@@ -1134,7 +1192,7 @@ void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 	}
 
 	if (keycode > 0) {
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 		if (ts->imports && ts->imports->report_gesture) {
 			struct gesture_event_data event;
 			int ret = 0;
@@ -1142,7 +1200,15 @@ void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 			dev_dbg(&ts->client->dev,
 				"%s: invoke imported report gesture function\n", __func__);
 			/* extract X and Y coordinates */
+#ifdef CONFIG_BOARD_USES_DOUBLE_TAP_CTRL
+			if(gesture_id == GESTURE_SINGLE_CLICK) {
+				event.evcode = 1;
+			} else if(gesture_id == GESTURE_DOUBLE_CLICK) {
+				event.evcode =4;
+			}
+#else
 			event.evcode = 1;
+#endif
 			/* call class method */
 			ret = ts->imports->report_gesture(&event);
 			if (!ret)
@@ -1222,7 +1288,7 @@ static int nvt_get_dt_def_coords(struct device *dev, char *name)
 	return rc;
 }
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
 #if defined(CONFIG_DRM)
 static int nova_check_dt(struct device_node *np)
@@ -1274,7 +1340,7 @@ static int32_t nvt_parse_dt(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
 	int32_t ret = 0;
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
 	int num_of_panel_supplier;
 	int j;
@@ -1298,7 +1364,7 @@ static int32_t nvt_parse_dt(struct device *dev)
 	}
 
 #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL)) &&\
-	!IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+	!IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	num_of_panel_supplier = of_property_count_strings(np, "novatek,panel-supplier");
 	NVT_LOG("%s: get novatek,panel-supplier count=%d", __func__, num_of_panel_supplier);
 	if (active_panel_name && num_of_panel_supplier > 1) {
@@ -1341,7 +1407,7 @@ static int32_t nvt_parse_dt(struct device *dev)
 		snprintf(nvt_mp_firmware_name, NVT_FILE_NAME_LENGTH, "%s_novatek_ts_mp.bin",
 			ts->panel_supplier);
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 		//Support FW name with panel & IC info
 #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
 		if (active_panel_name) {
@@ -1670,7 +1736,6 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 	uint8_t input_id = 0;
 #if MT_PROTOCOL_B
 	uint8_t press_id[TOUCH_MAX_FINGER_NUM] = {0};
-	static uint8_t touchdown[TOUCH_MAX_FINGER_NUM];
 #endif /* MT_PROTOCOL_B */
 	int32_t i = 0;
 	int32_t finger_cnt = 0;
@@ -1827,21 +1892,14 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 			if (input_p == 0)
 				input_p = 1;
 
-			press_id[input_id - 1] = 1;
-			/* log touch down event once */
-			if (touchdown[input_id - 1] == 0) {
 #if MT_PROTOCOL_B
-				ts->last_event_time = ktime_get();
-				pr_debug("TOUCH: [%d] logged timestamp\n", input_id - 1);
-				touchdown[input_id - 1] = 1;
-				pr_debug("TOUCH: [%d] pressed (event %d)\n", input_id - 1, point_data[position] & 0x07);
-				input_mt_slot(ts->input_dev, input_id - 1);
-				input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, true);
+			press_id[input_id - 1] = 1;
+			input_mt_slot(ts->input_dev, input_id - 1);
+			input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, true);
 #else /* MT_PROTOCOL_B */
-				input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, input_id - 1);
-				input_report_key(ts->input_dev, BTN_TOUCH, 1);
+			input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, input_id - 1);
+			input_report_key(ts->input_dev, BTN_TOUCH, 1);
 #endif /* MT_PROTOCOL_B */
-			}
 
 #ifdef PALM_GESTURE
 			if((point_data[position] & 0x07) == PALM_TOUCH) { //palm
@@ -1855,6 +1913,17 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 				input_report_abs(ts->input_dev, ABS_MT_ORIENTATION, input_orient);
 #endif
 				input_report_abs(ts->input_dev, ABS_MT_PRESSURE, input_p);
+#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+                                {
+					struct dda_finger_coords finger_data;
+                                        finger_data.x = input_x;
+                                        finger_data.y = input_y;
+                                        finger_data.p = input_p;
+                                        finger_data.minor = input_major;
+                                        finger_data.major = input_major;
+                                        moto_dda_process_finger_press(input_id - 1, &finger_data);
+				}
+#endif
 			} else
 #endif
 			{
@@ -1864,6 +1933,32 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 				input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, input_y);
 				input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, input_major);
 				input_report_abs(ts->input_dev, ABS_MT_PRESSURE, input_p);
+#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+                                {
+					struct dda_finger_coords finger_data;
+					finger_data.x = input_x;
+                                        finger_data.y = input_y;
+                                        finger_data.p = input_p;
+                                        finger_data.minor = input_major;
+                                        finger_data.major = input_major;
+                                        moto_dda_process_finger_press(input_id - 1, &finger_data);
+
+#ifdef MOTO_DDA_ACTIVE_STYLUS //ACTIVE_PEN_FEATURE TEST
+                                	if(0 == (input_id - 1)){
+                                        	struct dda_pen_coords pen_data;
+	                                        pen_data.status = 1;
+        	                                pen_data.tool_type = 0;
+                	                        pen_data.tilt_x  = input_p / 10;
+                        	                pen_data.tilt_y  = input_p / 20;
+                                	        pen_data.x = input_x;
+                                        	pen_data.y = input_y;
+	                                        pen_data.p = input_p;
+        	                                moto_dda_process_pen_report(&pen_data);
+                	                }
+#endif //#ifdef MOTO_DDA_ACTIVE_STYLUS
+				}
+#endif
+
 			}
 #if MT_PROTOCOL_B
 #else /* MT_PROTOCOL_B */
@@ -1876,7 +1971,7 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 
 #if MT_PROTOCOL_B
 	for (i = 0; i < ts->max_touch_num; i++) {
-		if (!press_id[i] && touchdown[i]) {
+		if (press_id[i] != 1) {
 			input_mt_slot(ts->input_dev, i);
 #ifdef PALM_GESTURE_RANGE
 			input_report_abs(ts->input_dev, ABS_MT_TOUCH_MINOR, 0);
@@ -1885,12 +1980,46 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 			input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, 0);
 			input_report_abs(ts->input_dev, ABS_MT_PRESSURE, 0);
 			input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, false);
-			touchdown[i] = 0;
-			pr_debug("TOUCH: [%d] release\n", i);
+#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+			moto_dda_process_finger_release(i);
+#ifdef MOTO_DDA_ACTIVE_STYLUS //ACTIVE_PEN_FEATURE TEST
+                        if(0 == i){
+                                struct dda_pen_coords pen_data;
+                                pen_data.status = 0;
+                                pen_data.tool_type = 0;
+                                pen_data.tilt_x  = 0;
+                                pen_data.tilt_y  = 0;
+                                pen_data.x = 0;
+                                pen_data.y = 0;
+                                pen_data.p = 0;
+                                moto_dda_process_pen_report(&pen_data);
+                        }
+#endif //#ifdef MOTO_DDA_ACTIVE_STYLUS
+#endif
+
+
 		}
 	}
 
 	input_report_key(ts->input_dev, BTN_TOUCH, (finger_cnt > 0));
+
+#ifdef NVT_TOUCH_LAST_TIME
+	if (finger_cnt > 0) {
+		//touch down/moving
+		if(time_flag) {
+			//check time_flag to get boot time only once in one touch session,
+			//to avoid impact touch performance for multi touch & moving cases
+			ts->last_event_time = ktime_get_boottime();
+			time_flag = 0;
+			NVT_DBG("set last_event_time\n");
+		}
+	} else {
+		//touch UP, enable time flag for next touch
+		time_flag = 1;
+		NVT_DBG("finger_cnt 0, reset time_flag\n");
+	}
+#endif
+
 #else /* MT_PROTOCOL_B */
 	if (finger_cnt == 0) {
 		input_report_key(ts->input_dev, BTN_TOUCH, 0);
@@ -2100,7 +2229,7 @@ int nvt_sensor_remove(struct nvt_ts_data *data)
 #include <linux/major.h>
 #include <linux/kdev_t.h>
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 /* Attribute: path (RO) */
 static ssize_t path_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -2445,10 +2574,28 @@ static int nvt_extend_attribute_group(struct device *dev, struct attribute_group
 	return 0;
 }
 
+#ifdef NVT_TOUCH_LAST_TIME
+static ssize_t timestamp_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ktime_t last_ktime;
+	struct timespec64 last_ts;
+
+	last_ktime = ts->last_event_time;
+	ts->last_event_time = 0;
+
+	last_ts = ktime_to_timespec64(last_ktime);
+	return scnprintf(buf, PAGE_SIZE, "%lld.%ld\n", last_ts.tv_sec, last_ts.tv_nsec);
+}
+#endif
+
 static struct device_attribute touchscreen_attributes[] = {
 	__ATTR_RO(path),
 	__ATTR_RO(vendor),
 	__ATTR_RO(ic_ver),
+#ifdef NVT_TOUCH_LAST_TIME
+	__ATTR_RO(timestamp),
+#endif
 #ifdef PALM_GESTURE
 	__ATTR(palm_settings, S_IRUGO | S_IWUSR | S_IWGRP, nvt_palm_settings_show, nvt_palm_settings_store),
 #endif
@@ -2481,8 +2628,7 @@ int32_t nvt_fw_class_init(bool create)
 	static int minor;
 
 	if (create) {
-#if defined (PALM_GESTURE) || defined (EDGE_SUPPRESSION)
-		ret = alloc_chrdev_region(&devno, 0, 1, NVT_PRIMARY_NAME);
+#if defined (PALM_GESTURE) || defined (EDGE_SUPPRESSION) || defined(NVT_TOUCH_LAST_TIME)		ret = alloc_chrdev_region(&devno, 0, 1, NVT_PRIMARY_NAME);
 #else
 		ret = alloc_chrdev_region(&devno, 0, 1, NVT_SPI_NAME);
 #endif
@@ -2501,7 +2647,7 @@ int32_t nvt_fw_class_init(bool create)
 
 		ts_class_dev = device_create(touchscreen_class, NULL,
 				devno,
-#if defined (PALM_GESTURE) || defined (EDGE_SUPPRESSION)
+#if defined (PALM_GESTURE) || defined (EDGE_SUPPRESSION) || defined(NVT_TOUCH_LAST_TIME)
 				ts, NVT_PRIMARY_NAME);
 #else
 				ts, NVT_SPI_NAME);
@@ -2521,7 +2667,7 @@ int32_t nvt_fw_class_init(bool create)
 		if (error)
 			goto device_destroy;
 		else
-#if defined (PALM_GESTURE) || defined (EDGE_SUPPRESSION)
+#if defined (PALM_GESTURE) || defined (EDGE_SUPPRESSION) || defined(NVT_TOUCH_LAST_TIME)
 			NVT_LOG("create /sys/class/touchscreen/%s Succeeded!\n", NVT_PRIMARY_NAME);
 #else
 			NVT_LOG("create /sys/class/touchscreen/%s Succeeded!\n", NVT_SPI_NAME);
@@ -2569,7 +2715,7 @@ device_destroy:
 
 	return -ENODEV;
 }
-#endif //#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI_V1
+#endif //#ifndef CONFIG_INPUT_TOUCHSCREEN_MMI
 
 #ifdef NOVATECH_PEN_NOTIFIER
 static int pen_notifier_callback(struct notifier_block *self,
@@ -2606,13 +2752,14 @@ return:
 static int32_t nvt_ts_probe(struct spi_device *client)
 {
 	int32_t ret = 0;
+	struct spi_geni_qcom_ctrl_data *spi_param = NULL;
 #if ((TOUCH_KEY_NUM > 0) || WAKEUP_GESTURE)
 	int32_t retry = 0;
 #endif
 #ifdef NVT_SENSOR_EN
 	static bool initialized_sensor;
 #endif
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 #if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
 	struct device_node *dp = client->dev.of_node;
 
@@ -2622,6 +2769,11 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		return ret;
 	}
 #endif
+#else
+	if (client->dev.of_node && !mmi_device_is_available(client->dev.of_node)) {
+		NVT_ERR("mmi: device not supported\n");
+		return -ENODEV;
+	}
 #endif
 
 	NVT_LOG("start\n");
@@ -2644,6 +2796,13 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		NVT_ERR("kzalloc for rbuf failed!\n");
 		ret = -ENOMEM;
 		goto err_malloc_rbuf;
+	}
+
+	spi_param = devm_kzalloc(&client->dev, sizeof(spi_param), GFP_KERNEL);
+	if(spi_param == NULL) {
+		NVT_ERR("devm_kzalloc for spi_param failed!\n");
+		ret = -ENOMEM;
+		goto err_malloc_spi_param;
 	}
 
 	ts->client = client;
@@ -2675,6 +2834,12 @@ static int32_t nvt_ts_probe(struct spi_device *client)
     /* new usage of MTK spi API */
     memcpy(&ts->spi_ctrl, &spi_ctrdata, sizeof(struct mtk_chip_config));
     ts->client->controller_data = (void *)&ts->spi_ctrl;
+#endif
+
+#ifdef CONFIG_SPI_SM8450
+	/* Initialize the driver data */
+	spi_param->spi_cs_clk_delay = 2;
+	client->controller_data = spi_param;
 #endif
 
 	NVT_LOG("mode=%d, max_speed_hz=%d\n", ts->client->mode, ts->client->max_speed_hz);
@@ -2792,6 +2957,13 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	ts->edge_reject_state = VERTICAL;
 #endif
 
+#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+        moto_dda_init("novatek-ts for Geneva5G");
+        ret = moto_dda_register_cdevice();
+        if (ret)
+                NVT_ERR("Failed register stylus dda device, %d", ret);
+#endif
+
 	sprintf(ts->phys, "input/ts");
 	ts->input_dev->name = NVT_TS_NAME;
 	ts->input_dev->phys = ts->phys;
@@ -2904,7 +3076,7 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		goto err_create_nvt_fwu_wq_failed;
 	}
 	INIT_DELAYED_WORK(&ts->nvt_fwu_work, Boot_Update_Firmware);
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	// please make sure boot update start after display reset(RESX) sequence
 	queue_delayed_work(nvt_fwu_wq, &ts->nvt_fwu_work, msecs_to_jiffies(14000));
 #endif
@@ -2961,8 +3133,8 @@ static int32_t nvt_ts_probe(struct spi_device *client)
     }
 #endif
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
-#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
+#if (((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))) || defined(NVT_CONFIG_DRM_PANEL))
 #if defined(CONFIG_DRM)
 	ts->drm_notif.notifier_call = nvt_drm_notifier_callback;
 	if (active_panel &&
@@ -3012,7 +3184,7 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 #endif //end version code >= 5.4.0
 #endif //end touchscreen_mmi
 
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	ret = nvt_mmi_init(ts, true);
 #else
 	ret = nvt_fw_class_init(true);
@@ -3030,11 +3202,11 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	return 0;
 
 err_create_touchscreen_class_failed:
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	nvt_mmi_init(ts, false);
 #endif
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
-#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
+#if (((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))) || defined(NVT_CONFIG_DRM_PANEL))
 #if defined(CONFIG_DRM)
 	if (active_panel) {
 		if (drm_panel_notifier_unregister(active_panel, &ts->drm_notif))
@@ -3115,6 +3287,9 @@ err_int_request_failed:
 	input_unregister_device(ts->input_dev);
 	ts->input_dev = NULL;
 err_input_register_device_failed:
+#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+        moto_dda_exit();
+#endif
 	if (ts->input_dev) {
 		input_free_device(ts->input_dev);
 		ts->input_dev = NULL;
@@ -3128,6 +3303,11 @@ err_gpio_config_failed:
 err_spi_setup:
 err_ckeck_full_duplex:
 	spi_set_drvdata(client, NULL);
+	if (spi_param) {
+		devm_kfree(&client->dev ,spi_param);
+		spi_param = NULL;
+	}
+err_malloc_spi_param:
 	if (ts->rbuf) {
 		kfree(ts->rbuf);
 		ts->rbuf = NULL;
@@ -3156,14 +3336,14 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 {
 	NVT_LOG("Removing driver...\n");
 
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	nvt_mmi_init(ts, false);
 #else
 	nvt_fw_class_init(false);
 #endif
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
-#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
+#if (((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))) || defined(NVT_CONFIG_DRM_PANEL))
 #if defined(CONFIG_DRM)
 	if (active_panel) {
 		drm_panel_notifier_unregister(active_panel, &ts->drm_notif);
@@ -3227,7 +3407,7 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 	}
 #endif
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 #if WAKEUP_GESTURE
 	device_init_wakeup(&ts->input_dev->dev, 0);
 #if defined(NVT_CONFIG_PANEL_NOTIFICATIONS) || defined(NVT_SET_TOUCH_STATE)
@@ -3243,6 +3423,10 @@ static int32_t nvt_ts_remove(struct spi_device *client)
 	mutex_destroy(&ts->lock);
 
 	nvt_gpio_deconfig(ts);
+
+#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+        moto_dda_exit();
+#endif
 
 	if (ts->input_dev) {
 		input_unregister_device(ts->input_dev);
@@ -3265,8 +3449,8 @@ static void nvt_ts_shutdown(struct spi_device *client)
 
 	nvt_irq_enable(false);
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
-#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
+#if (((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))) || defined(NVT_CONFIG_DRM_PANEL))
 #if defined(CONFIG_DRM)
 	if (active_panel) {
 		drm_panel_notifier_unregister(active_panel, &ts->drm_notif);
@@ -3343,6 +3527,23 @@ void release_all_touches(void)
 		input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, 0);
 		input_report_abs(ts->input_dev, ABS_MT_PRESSURE, 0);
 		input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, 0);
+#ifdef CONFIG_MOTO_DDA_PASSIVESTYLUS
+		moto_dda_process_finger_release(i);
+#ifdef MOTO_DDA_ACTIVE_STYLUS //ACTIVE_PEN_FEATURE TEST
+                        if(0 == i){
+                                struct dda_pen_coords pen_data;
+                                pen_data.status = 0;
+                                pen_data.tool_type = 0;
+                                pen_data.tilt_x  = 0;
+                                pen_data.tilt_y  = 0;
+                                pen_data.x = 0;
+                                pen_data.y = 0;
+                                pen_data.p = 0;
+                                moto_dda_process_pen_report(&pen_data);
+                        }
+#endif //#ifdef MOTO_DDA_ACTIVE_STYLUS
+#endif
+
 	}
 #endif
 	input_report_key(ts->input_dev, BTN_TOUCH, 0);
@@ -3505,7 +3706,7 @@ int32_t nvt_ts_resume(struct device *dev)
 
 	mutex_unlock(&ts->lock);
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	/* restore data */
 	if (ts->interpolation_ctrl) {
 		nvt_cmd_write(ts->interpolation_cmd[0], ts->interpolation_cmd[1], 0, 2);
@@ -3538,8 +3739,8 @@ int32_t nvt_ts_resume(struct device *dev)
 	return 0;
 }
 
-#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
-#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) || defined(NVT_CONFIG_DRM_PANEL))
+#if !IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
+#if (((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))) || defined(NVT_CONFIG_DRM_PANEL))
 #if defined(CONFIG_DRM)
 #ifdef LCM_FAST_LIGHTUP
 static void nova_resume_work_func(struct work_struct *work)

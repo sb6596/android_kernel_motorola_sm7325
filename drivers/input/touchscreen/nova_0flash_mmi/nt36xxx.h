@@ -24,8 +24,10 @@
 #include <linux/spi/spi.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
-#include <linux/ktime.h>
 #include <linux/mmi_kernel_common.h>
+#ifdef NVT_TOUCH_LAST_TIME
+#include <linux/ktime.h>
+#endif
 
 #ifdef NVT_SENSOR_EN
 #include <linux/sensors.h>
@@ -55,7 +57,7 @@
 
 #include <linux/mmi_wake_lock.h>
 
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 #include <linux/touchscreen_mmi.h>
 #endif
 
@@ -123,7 +125,7 @@ extern const uint16_t touch_key_array[TOUCH_KEY_NUM];
 #define NVT_TOUCH_EXT_PROC 1
 #define NVT_TOUCH_MP 1
 #define MT_PROTOCOL_B 1
-#if defined (NVT_SENSOR_EN) || IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if defined (NVT_SENSOR_EN) || IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 #define WAKEUP_GESTURE 1
 #else
 #define WAKEUP_GESTURE 0
@@ -145,6 +147,8 @@ extern const uint16_t gesture_key_array[];
 #endif
 #define NVT_TOUCH_ESD_CHECK_PERIOD 1500	/* ms */
 #define NVT_TOUCH_WDT_RECOVERY 1
+
+#define DOUBLE_TAP_GESTURE_MODE_CMD 0x7B
 
 #if NVT_TOUCH_ESD_PROTECT
 extern struct delayed_work nvt_esd_check_work;
@@ -224,13 +228,16 @@ struct nvt_ts_data {
 	bool gesture_enabled;
 	bool wakeable;
 #endif
-#ifdef NVT_SENSOR_EN
-	bool should_enable_gesture;
+#ifdef NVT_TOUCH_LAST_TIME
+	ktime_t last_event_time;
+#endif
 #ifdef NOVATECH_PEN_NOTIFIER
 	bool fw_ready_flag;
 	int nvt_pen_detect_flag;
 	struct notifier_block pen_notif;
 #endif
+#ifdef NVT_SENSOR_EN
+	bool should_enable_gesture;
 	enum display_state screen_state;
 	struct mutex state_mutex;
 	struct nvt_sensor_platform_data *sensor_pdata;
@@ -265,7 +272,7 @@ struct nvt_ts_data {
 #endif
 #endif //version code >= 5.4.0
 
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	struct ts_mmi_class_methods *imports;
 #endif
 #ifdef TS_MMI_TOUCH_MULTIWAY_UPDATE_FW
@@ -280,7 +287,6 @@ struct nvt_ts_data {
 	uint8_t edge_cmd[3];	/* /< edge switching command */
 	uint8_t rotate_cmd;	/* /< rotate switching command */
 	bool edge_ctrl;	/* /< edge rate switching */
-	ktime_t last_event_time;
 };
 
 #if NVT_TOUCH_PROC
@@ -359,6 +365,7 @@ int32_t nvt_write_addr(uint32_t addr, uint8_t data);
 int32_t nvt_ts_suspend(struct device *dev);
 int32_t nvt_ts_resume(struct device *dev);
 int nvt_set_charger(uint8_t charger_on_off);
+int32_t nvt_cmd_ext_store(uint8_t cmd, uint8_t subcmd);
 #ifdef NVT_SET_TOUCH_STATE
 int touch_set_state(int state, int panel_idx);
 int check_touch_state(int *state, int panel_idx);
